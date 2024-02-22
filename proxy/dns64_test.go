@@ -64,7 +64,8 @@ func TestDNS64Race(t *testing.T) {
 	for i := 0; i < testMessagesCount; i++ {
 		// The [dns.Conn] isn't safe for concurrent use despite the requirements
 		// from the [net.Conn] documentation.
-		conn, err := dns.Dial("tcp", addr)
+		var conn *dns.Conn
+		conn, err = dns.Dial("tcp", addr)
 		require.NoError(t, err)
 
 		go sendTestAAAAMessageAsync(conn, g, ipv4OnlyFqdn, syncCh)

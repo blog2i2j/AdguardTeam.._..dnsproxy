@@ -43,7 +43,7 @@ const (
 	testMessagesCount = 10
 )
 
-// TODO(e.burkov):  !! doc
+// localhostAnyPort is a [netip.AddrPort] having a value of 127.0.0.1:0.
 var localhostAnyPort = netip.MustParseAddrPort(netutil.JoinHostPort(listenIP, 0))
 
 // TestProxyRace sends multiple parallel DNS requests to the
@@ -1319,18 +1319,6 @@ func TestECSProxyCacheMinMaxTTL(t *testing.T) {
 	assert.True(t, ci.m.Answer[0].Header().Ttl == prx.CacheMaxTTL)
 }
 
-// TODO(e.burkov):  !! remove
-var testConfig = &Config{
-	UDPListenAddr: []*net.UDPAddr{{IP: net.ParseIP(listenIP), Port: 0}},
-	TCPListenAddr: []*net.TCPAddr{{IP: net.ParseIP(listenIP), Port: 0}},
-	TrustedProxies: netutil.SliceSubnetSet{
-		netip.MustParsePrefix("0.0.0.0/0"),
-		netip.MustParsePrefix("::0/0"),
-	},
-	RatelimitSubnetLenIPv4: 24,
-	RatelimitSubnetLenIPv6: 64,
-}
-
 // mustNew wraps [New] function failing the test on error.
 func mustNew(t *testing.T, conf *Config) (p *Proxy) {
 	t.Helper()
@@ -1342,9 +1330,7 @@ func mustNew(t *testing.T, conf *Config) (p *Proxy) {
 }
 
 func sendTestMessageAsync(t *testing.T, conn *dns.Conn, g *sync.WaitGroup) {
-	defer func() {
-		g.Done()
-	}()
+	defer g.Done()
 
 	req := createTestMessage()
 	err := conn.WriteMsg(req)
