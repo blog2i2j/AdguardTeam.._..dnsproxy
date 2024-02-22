@@ -172,6 +172,7 @@ type Proxy struct {
 	// RWMutex protects the whole proxy.
 	//
 	// TODO(e.burkov):  Find out what exactly it protects and name it properly.
+	// Also make it a pointer.
 	sync.RWMutex
 
 	// requestsSema limits the number of simultaneous requests.
@@ -185,9 +186,13 @@ type Proxy struct {
 	requestsSema syncutil.Semaphore
 
 	// time provides the current time.
+	//
+	// TODO(e.burkov):  Consider configuring it.
 	time clock
 
 	// randSrc provides the source of randomness.
+	//
+	// TODO(e.burkov):  Consider configuring it.
 	randSrc rand.Source
 
 	// Config is the proxy configuration.
@@ -199,39 +204,11 @@ type Proxy struct {
 // New creates a new Proxy with the specified configuration.
 func New(c *Config) (p *Proxy, err error) {
 	p = &Proxy{
-		Config: *c,
-
-		counter: 0,
-		started: false,
-
-		// TODO(e.burkov):  !! init
-		udpListen:         nil,
-		tcpListen:         nil,
-		tlsListen:         nil,
-		quicListen:        nil,
-		httpsListen:       nil,
-		h3Listen:          nil,
-		dnsCryptUDPListen: nil,
-		dnsCryptTCPListen: nil,
-
-		httpsServer:    nil,
-		h3Server:       nil,
-		dnsCryptServer: nil,
-
+		Config:           *c,
 		upstreamRTTStats: map[string]upstreamRTTStats{},
-
-		dns64Prefs: nil,
-
-		rttLock: sync.Mutex{},
-
-		ratelimitBuckets: nil,
+		rttLock:          sync.Mutex{},
 		ratelimitLock:    sync.Mutex{},
-
-		shortFlighter: nil,
-		cache:         nil,
-
-		fastestAddr: nil,
-
+		RWMutex:          sync.RWMutex{},
 		bytesPool: &sync.Pool{
 			New: func() any {
 				// 2 bytes may be used to store packet length (see TCP/TLS).
@@ -241,12 +218,7 @@ func New(c *Config) (p *Proxy, err error) {
 			},
 		},
 		udpOOBSize: proxynetutil.UDPGetOOBSize(),
-
-		RWMutex: sync.RWMutex{},
-
-		requestsSema: nil,
-		time:         realClock{},
-		randSrc:      nil,
+		time:       realClock{},
 	}
 
 	// TODO(e.burkov):  Validate config separately and add the contract to the
@@ -362,7 +334,7 @@ func (p *Proxy) validateBasicAuth() (err error) {
 // type check
 var _ service.Interface = (*Proxy)(nil)
 
-// Start initializes the proxy server and starts listening
+// Start implements the [service.Interface] for *Proxy.
 func (p *Proxy) Start(ctx context.Context) (err error) {
 	log.Info("dnsproxy: starting dns proxy server")
 
@@ -401,9 +373,11 @@ func closeAll[C io.Closer](errs []error, closers ...C) (appended []error) {
 	return errs
 }
 
-// Shutdown stops the proxy server including all its listeners
-func (p *Proxy) Shutdown(_ context.Context) error {
-	log.Info("dnsproxy: stopping dns proxy server")
+// Shutdown implements the [service.Interface] for *Proxy.
+//
+// TODO(e.burkov):  Use the context.
+func (p *Proxy) Shutdown(_ context.Context) (err error) {
+	log.Info("dnsproxy: stopping server")
 
 	p.Lock()
 	defer p.Unlock()

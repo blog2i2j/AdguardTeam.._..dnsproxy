@@ -7,28 +7,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AdguardTeam/dnsproxy/upstream"
-	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/require"
 )
 
 func TestRatelimitingProxy(t *testing.T) {
-	// Prepare the proxy server
-	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
-		Timeout: defaultTimeout,
-	})
-	require.NoError(t, err)
-
 	dnsProxy := mustNew(t, &Config{
-		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
-		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
-		UpstreamConfig: upsConf,
-		TrustedProxies: netutil.SliceSubnetSet{
-			netip.MustParsePrefix("0.0.0.0/0"),
-			netip.MustParsePrefix("::0/0"),
-		},
+		UDPListenAddr:          []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:          []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig:         newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr),
+		TrustedProxies:         defaultTrustedProxies,
 		RatelimitSubnetLenIPv4: 24,
 		RatelimitSubnetLenIPv6: 64,
 		Ratelimit:              1,
@@ -36,7 +25,7 @@ func TestRatelimitingProxy(t *testing.T) {
 
 	// Start listening
 	ctx := context.Background()
-	err = dnsProxy.Start(ctx)
+	err := dnsProxy.Start(ctx)
 	require.NoError(t, err)
 	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
@@ -45,7 +34,7 @@ func TestRatelimitingProxy(t *testing.T) {
 	client := &dns.Client{Net: "udp", Timeout: 500 * time.Millisecond}
 
 	// Send the first message (not blocked)
-	req := createTestMessage()
+	req := newTestMessage()
 
 	r, _, err := client.Exchange(req, addr.String())
 	if err != nil {
@@ -54,7 +43,7 @@ func TestRatelimitingProxy(t *testing.T) {
 	requireResponse(t, req, r)
 
 	// Send the second message (blocked)
-	req = createTestMessage()
+	req = newTestMessage()
 
 	_, _, err = client.Exchange(req, addr.String())
 	if err == nil {

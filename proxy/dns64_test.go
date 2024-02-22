@@ -37,10 +37,7 @@ func TestDNS64Race(t *testing.T) {
 		UpstreamConfig: &UpstreamConfig{
 			Upstreams: []upstream.Upstream{ups},
 		},
-		TrustedProxies: netutil.SliceSubnetSet{
-			netip.MustParsePrefix("0.0.0.0/0"),
-			netip.MustParsePrefix("::0/0"),
-		},
+		TrustedProxies:         defaultTrustedProxies,
 		RatelimitSubnetLenIPv4: 24,
 		RatelimitSubnetLenIPv6: 64,
 
@@ -363,10 +360,7 @@ func TestProxy_Resolve_dns64(t *testing.T) {
 				PrivateRDNSUpstreamConfig: &UpstreamConfig{
 					Upstreams: []upstream.Upstream{localUps},
 				},
-				TrustedProxies: netutil.SliceSubnetSet{
-					netip.MustParsePrefix("0.0.0.0/0"),
-					netip.MustParsePrefix("::0/0"),
-				},
+				TrustedProxies:         defaultTrustedProxies,
 				RatelimitSubnetLenIPv4: 24,
 				RatelimitSubnetLenIPv6: 64,
 				CacheEnabled:           true,

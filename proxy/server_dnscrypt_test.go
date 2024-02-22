@@ -4,12 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/netip"
 	"testing"
 	"time"
 
-	"github.com/AdguardTeam/dnsproxy/upstream"
-	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/ameshkov/dnscrypt/v2"
 	"github.com/ameshkov/dnsstamps"
@@ -30,11 +27,6 @@ func getFreePort() uint {
 }
 
 func createTestDNSCryptProxy(t *testing.T) (*Proxy, dnscrypt.ResolverConfig) {
-	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
-		Timeout: defaultTimeout,
-	})
-	require.NoError(t, err)
-
 	rc, err := dnscrypt.GenerateResolverConfig("example.org", nil)
 	assert.NoError(t, err)
 
@@ -43,17 +35,14 @@ func createTestDNSCryptProxy(t *testing.T) (*Proxy, dnscrypt.ResolverConfig) {
 
 	port := getFreePort()
 	p := mustNew(t, &Config{
-		DNSCryptUDPListenAddr: []*net.UDPAddr{
-			{Port: int(port), IP: net.ParseIP(listenIP)},
-		},
-		DNSCryptTCPListenAddr: []*net.TCPAddr{
-			{Port: int(port), IP: net.ParseIP(listenIP)},
-		},
-		UpstreamConfig: upsConf,
-		TrustedProxies: netutil.SliceSubnetSet{
-			netip.MustParsePrefix("0.0.0.0/0"),
-			netip.MustParsePrefix("::0/0"),
-		},
+		DNSCryptUDPListenAddr: []*net.UDPAddr{{
+			Port: int(port), IP: net.ParseIP(listenIP),
+		}},
+		DNSCryptTCPListenAddr: []*net.TCPAddr{{
+			Port: int(port), IP: net.ParseIP(listenIP),
+		}},
+		UpstreamConfig:         newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr),
+		TrustedProxies:         defaultTrustedProxies,
 		RatelimitSubnetLenIPv4: 24,
 		RatelimitSubnetLenIPv6: 64,
 		EnableEDNSClientSubnet: true,
@@ -99,7 +88,7 @@ func checkDNSCryptProxy(t *testing.T, proto string, stamp dnsstamps.ServerStamp)
 	assert.Nil(t, err)
 
 	// Send the test message
-	msg := createTestMessage()
+	msg := newTestMessage()
 	reply, err := c.Exchange(msg, ri)
 	assert.Nil(t, err)
 	requireResponse(t, msg, reply)

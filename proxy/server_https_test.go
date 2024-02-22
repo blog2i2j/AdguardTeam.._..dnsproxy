@@ -14,8 +14,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AdguardTeam/dnsproxy/upstream"
-	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
@@ -38,23 +36,14 @@ func TestHttpsProxy(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Prepare dnsProxy with its configuration.
-			tlsConf, caPem := createServerTLSConfig(t)
-			upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
-				Timeout: defaultTimeout,
-			})
-			require.NoError(t, err)
-
+			tlsConf, caPem := newTLSConfig(t)
 			dnsProxy := mustNew(t, &Config{
-				TLSListenAddr:   []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
-				HTTPSListenAddr: []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
-				QUICListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
-				TLSConfig:       tlsConf,
-				UpstreamConfig:  upsConf,
-				TrustedProxies: netutil.SliceSubnetSet{
-					netip.MustParsePrefix("0.0.0.0/0"),
-					netip.MustParsePrefix("::0/0"),
-				},
+				TLSListenAddr:          []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+				HTTPSListenAddr:        []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+				QUICListenAddr:         []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+				TLSConfig:              tlsConf,
+				UpstreamConfig:         newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr),
+				TrustedProxies:         defaultTrustedProxies,
 				RatelimitSubnetLenIPv4: 24,
 				RatelimitSubnetLenIPv6: 64,
 				HTTP3:                  tc.http3,
@@ -62,7 +51,7 @@ func TestHttpsProxy(t *testing.T) {
 
 			// Run the proxy.
 			ctx := context.Background()
-			err = dnsProxy.Start(ctx)
+			err := dnsProxy.Start(ctx)
 			require.NoError(t, err)
 			testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
@@ -70,7 +59,7 @@ func TestHttpsProxy(t *testing.T) {
 			client := createTestHTTPClient(dnsProxy, caPem, tc.http3)
 
 			// Prepare a test message to be sent to the server.
-			msg := createTestMessage()
+			msg := newTestMessage()
 
 			// Send the test message and check if the response is what we
 			// expected.
@@ -88,23 +77,14 @@ func TestProxy_trustedProxies(t *testing.T) {
 
 	doRequest := func(t *testing.T, addr, expectedClientIP netip.Addr) {
 		// Prepare the proxy server.
-		tlsConf, caPem := createServerTLSConfig(t)
-
-		upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
-			Timeout: defaultTimeout,
-		})
-		require.NoError(t, err)
-
+		tlsConf, caPem := newTLSConfig(t)
 		dnsProxy := mustNew(t, &Config{
-			TLSListenAddr:   []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
-			HTTPSListenAddr: []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
-			QUICListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
-			TLSConfig:       tlsConf,
-			UpstreamConfig:  upsConf,
-			TrustedProxies: netutil.SliceSubnetSet{
-				netip.MustParsePrefix("0.0.0.0/0"),
-				netip.MustParsePrefix("::0/0"),
-			},
+			TLSListenAddr:          []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+			HTTPSListenAddr:        []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+			QUICListenAddr:         []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+			TLSConfig:              tlsConf,
+			UpstreamConfig:         newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr),
+			TrustedProxies:         defaultTrustedProxies,
 			RatelimitSubnetLenIPv4: 24,
 			RatelimitSubnetLenIPv6: 64,
 		})
@@ -118,13 +98,13 @@ func TestProxy_trustedProxies(t *testing.T) {
 
 		client := createTestHTTPClient(dnsProxy, caPem, false)
 
-		msg := createTestMessage()
+		msg := newTestMessage()
 
 		dnsProxy.TrustedProxies = netip.PrefixFrom(addr, addr.BitLen())
 
 		// Start listening.
 		ctx := context.Background()
-		err = dnsProxy.Start(ctx)
+		err := dnsProxy.Start(ctx)
 		require.NoError(t, err)
 		testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 

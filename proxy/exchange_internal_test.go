@@ -201,7 +201,7 @@ func TestProxy_Exchange_loadBalance(t *testing.T) {
 		servers: []upstream.Upstream{each200, each100, each50},
 	}}
 
-	req := createTestMessage()
+	req := newTestMessage()
 	cli := netip.AddrPortFrom(netutil.IPv4Localhost(), 1234)
 
 	for _, tc := range testCases {
@@ -220,10 +220,7 @@ func TestProxy_Exchange_loadBalance(t *testing.T) {
 			UpstreamConfig: &UpstreamConfig{
 				Upstreams: ups,
 			},
-			TrustedProxies: netutil.SliceSubnetSet{
-				netip.MustParsePrefix("0.0.0.0/0"),
-				netip.MustParsePrefix("::0/0"),
-			},
+			TrustedProxies:         defaultTrustedProxies,
 			RatelimitSubnetLenIPv4: 24,
 			RatelimitSubnetLenIPv6: 64,
 		})

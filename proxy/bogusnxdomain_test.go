@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/AdguardTeam/dnsproxy/upstream"
-	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
@@ -15,19 +14,11 @@ import (
 )
 
 func TestProxy_IsBogusNXDomain(t *testing.T) {
-	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
-		Timeout: defaultTimeout,
-	})
-	require.NoError(t, err)
-
 	prx := mustNew(t, &Config{
-		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
-		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
-		UpstreamConfig: upsConf,
-		TrustedProxies: netutil.SliceSubnetSet{
-			netip.MustParsePrefix("0.0.0.0/0"),
-			netip.MustParsePrefix("::0/0"),
-		},
+		UDPListenAddr:          []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:          []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig:         newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr),
+		TrustedProxies:         defaultTrustedProxies,
 		RatelimitSubnetLenIPv4: 24,
 		RatelimitSubnetLenIPv6: 64,
 		CacheEnabled:           true,
@@ -91,12 +82,12 @@ func TestProxy_IsBogusNXDomain(t *testing.T) {
 	prx.UpstreamConfig.Upstreams = []upstream.Upstream{&u}
 
 	ctx := context.Background()
-	err = prx.Start(ctx)
+	err := prx.Start(ctx)
 	require.NoError(t, err)
 	testutil.CleanupAndRequireSuccess(t, func() (err error) { return prx.Shutdown(ctx) })
 
 	d := &DNSContext{
-		Req: createHostTestMessage("host"),
+		Req: newHostTestMessage("host"),
 	}
 
 	for _, tc := range testCases {

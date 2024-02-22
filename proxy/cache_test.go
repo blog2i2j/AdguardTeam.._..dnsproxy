@@ -30,19 +30,11 @@ var upstreamWithAddr = &fakeUpstream{
 }
 
 func TestServeCached(t *testing.T) {
-	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
-		Timeout: defaultTimeout,
-	})
-	require.NoError(t, err)
-
 	dnsProxy := mustNew(t, &Config{
-		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
-		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
-		UpstreamConfig: upsConf,
-		TrustedProxies: netutil.SliceSubnetSet{
-			netip.MustParsePrefix("0.0.0.0/0"),
-			netip.MustParsePrefix("::0/0"),
-		},
+		UDPListenAddr:          []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:          []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig:         newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr),
+		TrustedProxies:         defaultTrustedProxies,
 		RatelimitSubnetLenIPv4: 24,
 		RatelimitSubnetLenIPv6: 64,
 		CacheEnabled:           true,
@@ -50,7 +42,7 @@ func TestServeCached(t *testing.T) {
 
 	// Start listening.
 	ctx := context.Background()
-	err = dnsProxy.Start(ctx)
+	err := dnsProxy.Start(ctx)
 	require.NoError(t, err)
 	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
@@ -279,26 +271,18 @@ func TestCache_concurrent(t *testing.T) {
 }
 
 func TestCacheExpiration(t *testing.T) {
-	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
-		Timeout: defaultTimeout,
-	})
-	require.NoError(t, err)
-
 	dnsProxy := mustNew(t, &Config{
-		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
-		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
-		UpstreamConfig: upsConf,
-		TrustedProxies: netutil.SliceSubnetSet{
-			netip.MustParsePrefix("0.0.0.0/0"),
-			netip.MustParsePrefix("::0/0"),
-		},
+		UDPListenAddr:          []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:          []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig:         newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr),
+		TrustedProxies:         defaultTrustedProxies,
 		RatelimitSubnetLenIPv4: 24,
 		RatelimitSubnetLenIPv6: 64,
 		CacheEnabled:           true,
 	})
 
 	ctx := context.Background()
-	err = dnsProxy.Start(ctx)
+	err := dnsProxy.Start(ctx)
 	require.NoError(t, err)
 	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
@@ -350,10 +334,7 @@ func TestCacheExpirationWithTTLOverride(t *testing.T) {
 		UpstreamConfig: &UpstreamConfig{
 			Upstreams: []upstream.Upstream{&u},
 		},
-		TrustedProxies: netutil.SliceSubnetSet{
-			netip.MustParsePrefix("0.0.0.0/0"),
-			netip.MustParsePrefix("::0/0"),
-		},
+		TrustedProxies:         defaultTrustedProxies,
 		RatelimitSubnetLenIPv4: 24,
 		RatelimitSubnetLenIPv6: 64,
 		CacheEnabled:           true,
@@ -369,7 +350,7 @@ func TestCacheExpirationWithTTLOverride(t *testing.T) {
 	d := &DNSContext{}
 
 	t.Run("replace_min", func(t *testing.T) {
-		d.Req = createHostTestMessage("host")
+		d.Req = newHostTestMessage("host")
 		d.Addr = netip.AddrPort{}
 
 		u.ans = []dns.RR{&dns.A{
@@ -393,7 +374,7 @@ func TestCacheExpirationWithTTLOverride(t *testing.T) {
 	})
 
 	t.Run("replace_max", func(t *testing.T) {
-		d.Req = createHostTestMessage("host2")
+		d.Req = newHostTestMessage("host2")
 		d.Addr = netip.AddrPort{}
 
 		u.ans = []dns.RR{&dns.A{

@@ -6,13 +6,10 @@ import (
 	"crypto/x509"
 	"io"
 	"net"
-	"net/netip"
 	"testing"
 	"time"
 
 	"github.com/AdguardTeam/dnsproxy/proxyutil"
-	"github.com/AdguardTeam/dnsproxy/upstream"
-	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
@@ -20,31 +17,21 @@ import (
 )
 
 func TestQuicProxy(t *testing.T) {
-	// Prepare the proxy server.
-	serverConfig, caPem := createServerTLSConfig(t)
-
-	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
-		Timeout: defaultTimeout,
-	})
-	require.NoError(t, err)
-
+	serverConfig, caPem := newTLSConfig(t)
 	dnsProxy := mustNew(t, &Config{
-		TLSListenAddr:   []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
-		HTTPSListenAddr: []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
-		QUICListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
-		TLSConfig:       serverConfig,
-		UpstreamConfig:  upsConf,
-		TrustedProxies: netutil.SliceSubnetSet{
-			netip.MustParsePrefix("0.0.0.0/0"),
-			netip.MustParsePrefix("::0/0"),
-		},
+		TLSListenAddr:          []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		HTTPSListenAddr:        []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		QUICListenAddr:         []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TLSConfig:              serverConfig,
+		UpstreamConfig:         newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr),
+		TrustedProxies:         defaultTrustedProxies,
 		RatelimitSubnetLenIPv4: 24,
 		RatelimitSubnetLenIPv6: 64,
 	})
 
 	// Start listening.
 	ctx := context.Background()
-	err = dnsProxy.Start(ctx)
+	err := dnsProxy.Start(ctx)
 	require.NoError(t, err)
 	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
@@ -76,24 +63,14 @@ func TestQuicProxy(t *testing.T) {
 }
 
 func TestQuicProxy_largePackets(t *testing.T) {
-	// Prepare the proxy server.
-	serverConfig, caPem := createServerTLSConfig(t)
-
-	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
-		Timeout: defaultTimeout,
-	})
-	require.NoError(t, err)
-
+	serverConfig, caPem := newTLSConfig(t)
 	dnsProxy := mustNew(t, &Config{
-		TLSListenAddr:   []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
-		HTTPSListenAddr: []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
-		QUICListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
-		TLSConfig:       serverConfig,
-		UpstreamConfig:  upsConf,
-		TrustedProxies: netutil.SliceSubnetSet{
-			netip.MustParsePrefix("0.0.0.0/0"),
-			netip.MustParsePrefix("::0/0"),
-		},
+		TLSListenAddr:          []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		HTTPSListenAddr:        []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		QUICListenAddr:         []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TLSConfig:              serverConfig,
+		UpstreamConfig:         newTestUpstreamConfig(t, defaultTimeout, testDefaultUpstreamAddr),
+		TrustedProxies:         defaultTrustedProxies,
 		RatelimitSubnetLenIPv4: 24,
 		RatelimitSubnetLenIPv6: 64,
 		// Make sure the request does not go to any real upstream.
@@ -116,7 +93,7 @@ func TestQuicProxy_largePackets(t *testing.T) {
 
 	// Start listening.
 	ctx := context.Background()
-	err = dnsProxy.Start(ctx)
+	err := dnsProxy.Start(ctx)
 	require.NoError(t, err)
 	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
@@ -139,7 +116,7 @@ func TestQuicProxy_largePackets(t *testing.T) {
 	})
 
 	// Create a test message large enough to take multiple QUIC frames.
-	msg := createTestMessage()
+	msg := newTestMessage()
 	msg.Extra = []dns.RR{
 		&dns.OPT{
 			Hdr: dns.RR_Header{Name: ".", Rrtype: dns.TypeOPT, Class: 4096},
@@ -230,7 +207,7 @@ func writeQUICStream(buf []byte, stream quic.Stream) (err error) {
 
 // sendTestQUICMessage send a test message to the specified QUIC connection.
 func sendTestQUICMessage(t *testing.T, conn quic.Connection, doqVersion DoQVersion) {
-	msg := createTestMessage()
+	msg := newTestMessage()
 	resp := sendQUICMessage(t, msg, conn, doqVersion)
 	requireResponse(t, msg, resp)
 }
