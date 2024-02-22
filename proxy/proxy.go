@@ -162,6 +162,8 @@ type Proxy struct {
 	// --
 
 	// bytesPool is a pool of byte slices used to read DNS packets.
+	//
+	// TODO(e.burkov):  Use [syncutil.Pool].
 	bytesPool *sync.Pool
 
 	// udpOOBSize is the size of the out-of-band data for UDP connections.
@@ -230,8 +232,15 @@ func New(c *Config) (p *Proxy, err error) {
 
 		fastestAddr: nil,
 
-		bytesPool:  nil,
-		udpOOBSize: 0,
+		bytesPool: &sync.Pool{
+			New: func() any {
+				// 2 bytes may be used to store packet length (see TCP/TLS).
+				b := make([]byte, 2+dns.MaxMsgSize)
+
+				return &b
+			},
+		},
+		udpOOBSize: proxynetutil.UDPGetOOBSize(),
 
 		RWMutex: sync.RWMutex{},
 
@@ -261,16 +270,6 @@ func New(c *Config) (p *Proxy, err error) {
 		p.requestsSema = syncutil.NewChanSemaphore(p.MaxGoroutines)
 	} else {
 		p.requestsSema = syncutil.EmptySemaphore{}
-	}
-
-	p.udpOOBSize = proxynetutil.UDPGetOOBSize()
-	p.bytesPool = &sync.Pool{
-		New: func() interface{} {
-			// 2 bytes may be used to store packet length (see TCP/TLS)
-			b := make([]byte, 2+dns.MaxMsgSize)
-
-			return &b
-		},
 	}
 
 	if p.UpstreamMode == UModeFastestAddr {
