@@ -6,10 +6,13 @@ import (
 	"crypto/x509"
 	"io"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
 	"github.com/AdguardTeam/dnsproxy/proxyutil"
+	"github.com/AdguardTeam/dnsproxy/upstream"
+	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
@@ -19,12 +22,31 @@ import (
 func TestQuicProxy(t *testing.T) {
 	// Prepare the proxy server.
 	serverConfig, caPem := createServerTLSConfig(t)
-	dnsProxy := createTestProxy(t, serverConfig)
-	testutil.CleanupAndRequireSuccess(t, dnsProxy.Stop)
+
+	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
+		Timeout: defaultTimeout,
+	})
+	require.NoError(t, err)
+
+	dnsProxy := mustNew(t, &Config{
+		TLSListenAddr:   []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		HTTPSListenAddr: []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		QUICListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TLSConfig:       serverConfig,
+		UpstreamConfig:  upsConf,
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+	})
 
 	// Start listening.
-	err := dnsProxy.Start()
+	ctx := context.Background()
+	err = dnsProxy.Start(ctx)
 	require.NoError(t, err)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
 	roots := x509.NewCertPool()
 	roots.AppendCertsFromPEM(caPem)
@@ -56,32 +78,47 @@ func TestQuicProxy(t *testing.T) {
 func TestQuicProxy_largePackets(t *testing.T) {
 	// Prepare the proxy server.
 	serverConfig, caPem := createServerTLSConfig(t)
-	dnsProxy := createTestProxy(t, serverConfig)
 
-	// Make sure the request does not go to any real upstream.
-	dnsProxy.RequestHandler = func(p *Proxy, d *DNSContext) (err error) {
-		resp := &dns.Msg{}
-		resp.SetReply(d.Req)
-		resp.Answer = []dns.RR{
-			&dns.A{
+	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
+		Timeout: defaultTimeout,
+	})
+	require.NoError(t, err)
+
+	dnsProxy := mustNew(t, &Config{
+		TLSListenAddr:   []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		HTTPSListenAddr: []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		QUICListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TLSConfig:       serverConfig,
+		UpstreamConfig:  upsConf,
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+		// Make sure the request does not go to any real upstream.
+		RequestHandler: func(_ *Proxy, d *DNSContext) (err error) {
+			resp := &dns.Msg{}
+			resp.SetReply(d.Req)
+			resp.Answer = []dns.RR{&dns.A{
 				Hdr: dns.RR_Header{
 					Name:   d.Req.Question[0].Name,
 					Rrtype: dns.TypeA,
 					Class:  dns.ClassINET,
 				},
 				A: net.IP{8, 8, 8, 8},
-			},
-		}
-		d.Res = resp
+			}}
+			d.Res = resp
 
-		return nil
-	}
-
-	testutil.CleanupAndRequireSuccess(t, dnsProxy.Stop)
+			return nil
+		},
+	})
 
 	// Start listening.
-	err := dnsProxy.Start()
+	ctx := context.Background()
+	err = dnsProxy.Start(ctx)
 	require.NoError(t, err)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
 	roots := x509.NewCertPool()
 	roots.AppendCertsFromPEM(caPem)

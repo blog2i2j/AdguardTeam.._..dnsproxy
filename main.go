@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -288,7 +289,11 @@ func run(options *Options) {
 	}
 
 	// Start the proxy server.
-	err := dnsProxy.Start()
+	//
+	// TODO(e.burkov):  Use signal handler.
+	ctx := context.Background()
+
+	err := dnsProxy.Start(ctx)
 	if err != nil {
 		log.Fatalf("cannot start the DNS proxy due to %s", err)
 	}
@@ -298,7 +303,7 @@ func run(options *Options) {
 	<-signalChannel
 
 	// Stopping the proxy.
-	err = dnsProxy.Stop()
+	err = dnsProxy.Shutdown(ctx)
 	if err != nil {
 		log.Fatalf("cannot stop the DNS proxy due to %s", err)
 	}

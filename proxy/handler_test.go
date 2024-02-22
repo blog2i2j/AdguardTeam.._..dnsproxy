@@ -1,11 +1,18 @@
 package proxy
 
 import (
+	"context"
+	"net"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/AdguardTeam/dnsproxy/upstream"
+	"github.com/AdguardTeam/golibs/netutil"
+	"github.com/AdguardTeam/golibs/testutil"
 	"github.com/miekg/dns"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFilteringHandler(t *testing.T) {
@@ -13,31 +20,46 @@ func TestFilteringHandler(t *testing.T) {
 	m := sync.RWMutex{}
 	blockResponse := false
 
+	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
+		Timeout: defaultTimeout,
+	})
+	require.NoError(t, err)
+
 	// Prepare the proxy server
-	dnsProxy := createTestProxy(t, nil)
-	dnsProxy.RequestHandler = func(p *Proxy, d *DNSContext) error {
-		m.Lock()
-		defer m.Unlock()
+	dnsProxy := mustNew(t, &Config{
+		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: upsConf,
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+		RequestHandler: func(p *Proxy, d *DNSContext) error {
+			m.Lock()
+			defer m.Unlock()
 
-		if !blockResponse {
-			// Use the default Resolve method if response is not blocked
-			return p.Resolve(d)
-		}
+			if !blockResponse {
+				// Use the default Resolve method if response is not blocked
+				return p.Resolve(d)
+			}
 
-		resp := dns.Msg{}
-		resp.SetRcode(d.Req, dns.RcodeNotImplemented)
-		resp.RecursionAvailable = true
+			resp := dns.Msg{}
+			resp.SetRcode(d.Req, dns.RcodeNotImplemented)
+			resp.RecursionAvailable = true
 
-		// Set the response right away
-		d.Res = &resp
-		return nil
-	}
+			// Set the response right away
+			d.Res = &resp
+			return nil
+		},
+	})
 
 	// Start listening
-	err := dnsProxy.Start()
-	if err != nil {
-		t.Fatalf("cannot start the DNS proxy: %s", err)
-	}
+	ctx := context.Background()
+	err = dnsProxy.Start(ctx)
+	require.NoError(t, err)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
 	// Create a DNS-over-UDP client connection
 	addr := dnsProxy.Addr(ProtoUDP)
@@ -63,11 +85,5 @@ func TestFilteringHandler(t *testing.T) {
 	}
 	if r.Rcode != dns.RcodeNotImplemented {
 		t.Fatalf("second request was not blocked")
-	}
-
-	// Stop the proxy
-	err = dnsProxy.Stop()
-	if err != nil {
-		t.Fatalf("cannot stop the DNS proxy: %s", err)
 	}
 }

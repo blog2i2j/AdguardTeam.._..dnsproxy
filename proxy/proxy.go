@@ -20,6 +20,7 @@ import (
 	"github.com/AdguardTeam/golibs/errors"
 	"github.com/AdguardTeam/golibs/log"
 	"github.com/AdguardTeam/golibs/netutil"
+	"github.com/AdguardTeam/golibs/service"
 	"github.com/AdguardTeam/golibs/syncutil"
 	"github.com/ameshkov/dnscrypt/v2"
 	"github.com/miekg/dns"
@@ -118,6 +119,8 @@ type Proxy struct {
 	upstreamRTTStats map[string]upstreamRTTStats
 
 	// rttLock protects upstreamRTTStats.
+	//
+	// TODO(e.burkov):  Make it a pointer.
 	rttLock sync.Mutex
 
 	// DNS64 (in case dnsproxy works in a NAT64/DNS64 network)
@@ -165,6 +168,8 @@ type Proxy struct {
 	udpOOBSize int
 
 	// RWMutex protects the whole proxy.
+	//
+	// TODO(e.burkov):  Find out what exactly it protects and name it properly.
 	sync.RWMutex
 
 	// requestsSema limits the number of simultaneous requests.
@@ -189,7 +194,108 @@ type Proxy struct {
 	Config
 }
 
+// New creates a new Proxy with the specified configuration.
+func New(c *Config) (p *Proxy, err error) {
+	p = &Proxy{
+		Config: *c,
+
+		counter: 0,
+		started: false,
+
+		// TODO(e.burkov):  !! init
+		udpListen:         nil,
+		tcpListen:         nil,
+		tlsListen:         nil,
+		quicListen:        nil,
+		httpsListen:       nil,
+		h3Listen:          nil,
+		dnsCryptUDPListen: nil,
+		dnsCryptTCPListen: nil,
+
+		httpsServer:    nil,
+		h3Server:       nil,
+		dnsCryptServer: nil,
+
+		upstreamRTTStats: map[string]upstreamRTTStats{},
+
+		dns64Prefs: nil,
+
+		rttLock: sync.Mutex{},
+
+		ratelimitBuckets: nil,
+		ratelimitLock:    sync.Mutex{},
+
+		shortFlighter: nil,
+		cache:         nil,
+
+		fastestAddr: nil,
+
+		bytesPool:  nil,
+		udpOOBSize: 0,
+
+		RWMutex: sync.RWMutex{},
+
+		requestsSema: nil,
+		time:         realClock{},
+		randSrc:      nil,
+	}
+
+	// TODO(e.burkov):  Validate config separately and add the contract to the
+	// New function.
+	err = p.validateConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	// TODO(s.chzhen):  Consider moving to [Proxy.validateConfig].
+	err = p.validateBasicAuth()
+	if err != nil {
+		return nil, fmt.Errorf("basic auth: %w", err)
+	}
+
+	p.initCache()
+
+	if p.MaxGoroutines > 0 {
+		log.Info("dnsproxy: max goroutines is set to %d", p.MaxGoroutines)
+
+		p.requestsSema = syncutil.NewChanSemaphore(p.MaxGoroutines)
+	} else {
+		p.requestsSema = syncutil.EmptySemaphore{}
+	}
+
+	p.udpOOBSize = proxynetutil.UDPGetOOBSize()
+	p.bytesPool = &sync.Pool{
+		New: func() interface{} {
+			// 2 bytes may be used to store packet length (see TCP/TLS)
+			b := make([]byte, 2+dns.MaxMsgSize)
+
+			return &b
+		},
+	}
+
+	if p.UpstreamMode == UModeFastestAddr {
+		log.Info("dnsproxy: fastest ip is enabled")
+
+		p.fastestAddr = fastip.NewFastestAddr()
+		if timeout := p.FastestPingTimeout; timeout > 0 {
+			p.fastestAddr.PingWaitTimeout = timeout
+		}
+	}
+
+	err = p.setupDNS64()
+	if err != nil {
+		return nil, fmt.Errorf("setting up DNS64: %w", err)
+	}
+
+	p.RatelimitWhitelist = slices.Clone(p.RatelimitWhitelist)
+	slices.SortFunc(p.RatelimitWhitelist, netip.Addr.Compare)
+
+	return p, nil
+}
+
 // Init populates fields of p but does not start listeners.
+//
+// Deprecated:  Use the [New] function instead.
 func (p *Proxy) Init() (err error) {
 	// TODO(s.chzhen):  Consider moving to [Proxy.validateConfig].
 	err = p.validateBasicAuth()
@@ -254,8 +360,11 @@ func (p *Proxy) validateBasicAuth() (err error) {
 	return nil
 }
 
+// type check
+var _ service.Interface = (*Proxy)(nil)
+
 // Start initializes the proxy server and starts listening
-func (p *Proxy) Start() (err error) {
+func (p *Proxy) Start(ctx context.Context) (err error) {
 	log.Info("dnsproxy: starting dns proxy server")
 
 	p.Lock()
@@ -265,18 +374,12 @@ func (p *Proxy) Start() (err error) {
 		return errors.Error("server has been already started")
 	}
 
-	err = p.validateConfig()
+	err = p.validateListenAddrs()
 	if err != nil {
+		// Don't wrap the error since it's informative enough as is.
 		return err
 	}
 
-	err = p.Init()
-	if err != nil {
-		return err
-	}
-
-	// TODO(a.garipov): Accept a context into this method.
-	ctx := context.Background()
 	err = p.startListeners(ctx)
 	if err != nil {
 		return fmt.Errorf("starting listeners: %w", err)
@@ -299,8 +402,8 @@ func closeAll[C io.Closer](errs []error, closers ...C) (appended []error) {
 	return errs
 }
 
-// Stop stops the proxy server including all its listeners
-func (p *Proxy) Stop() error {
+// Shutdown stops the proxy server including all its listeners
+func (p *Proxy) Shutdown(_ context.Context) error {
 	log.Info("dnsproxy: stopping dns proxy server")
 
 	p.Lock()

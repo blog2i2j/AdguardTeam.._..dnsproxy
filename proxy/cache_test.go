@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"net"
 	"net/netip"
 	"strings"
@@ -29,14 +30,29 @@ var upstreamWithAddr = &fakeUpstream{
 }
 
 func TestServeCached(t *testing.T) {
-	// Prepare the proxy server.
-	dnsProxy := createTestProxy(t, nil)
-	dnsProxy.CacheEnabled = true // just one request per second is allowed
+	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
+		Timeout: defaultTimeout,
+	})
+	require.NoError(t, err)
+
+	dnsProxy := mustNew(t, &Config{
+		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: upsConf,
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+		CacheEnabled:           true,
+	})
 
 	// Start listening.
-	err := dnsProxy.Start()
-	require.NoErrorf(t, err, "cannot start the DNS proxy: %s", err)
-	testutil.CleanupAndRequireSuccess(t, dnsProxy.Stop)
+	ctx := context.Background()
+	err = dnsProxy.Start(ctx)
+	require.NoError(t, err)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
 	// Fill the cache.
 	reply := (&dns.Msg{
@@ -263,12 +279,28 @@ func TestCache_concurrent(t *testing.T) {
 }
 
 func TestCacheExpiration(t *testing.T) {
-	dnsProxy := createTestProxy(t, nil)
-	dnsProxy.CacheEnabled = true
-
-	err := dnsProxy.Start()
+	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
+		Timeout: defaultTimeout,
+	})
 	require.NoError(t, err)
-	testutil.CleanupAndRequireSuccess(t, dnsProxy.Stop)
+
+	dnsProxy := mustNew(t, &Config{
+		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: upsConf,
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+		CacheEnabled:           true,
+	})
+
+	ctx := context.Background()
+	err = dnsProxy.Start(ctx)
+	require.NoError(t, err)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
 	// Create dns messages with TTL of 1 second.
 	rrs := []dns.RR{
@@ -310,17 +342,29 @@ func TestCacheExpiration(t *testing.T) {
 }
 
 func TestCacheExpirationWithTTLOverride(t *testing.T) {
-	dnsProxy := createTestProxy(t, nil)
-	dnsProxy.CacheEnabled = true
-	dnsProxy.CacheMinTTL = 20
-	dnsProxy.CacheMaxTTL = 40
-
 	u := testUpstream{}
-	dnsProxy.UpstreamConfig.Upstreams = []upstream.Upstream{&u}
 
-	err := dnsProxy.Start()
+	dnsProxy := mustNew(t, &Config{
+		UDPListenAddr: []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr: []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: &UpstreamConfig{
+			Upstreams: []upstream.Upstream{&u},
+		},
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+		CacheEnabled:           true,
+		CacheMinTTL:            20,
+		CacheMaxTTL:            40,
+	})
+
+	ctx := context.Background()
+	err := dnsProxy.Start(ctx)
 	require.NoError(t, err)
-	testutil.CleanupAndRequireSuccess(t, dnsProxy.Stop)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
 	d := &DNSContext{}
 

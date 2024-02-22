@@ -126,7 +126,8 @@ func (p *Proxy) calcWeights(ups []upstream.Upstream) (weights []float64) {
 	defer p.rttLock.Unlock()
 
 	for _, u := range ups {
-		stat := p.upstreamRTTStats[u.Address()]
+		addr := u.Address()
+		stat := p.upstreamRTTStats[addr]
 		if stat.rttSum == 0 || stat.reqNum == 0 {
 			// Use 1 as the default weight.
 			weights = append(weights, 1)

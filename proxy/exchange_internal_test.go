@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"net"
 	"net/netip"
 	"sync"
 	"testing"
@@ -204,19 +205,32 @@ func TestProxy_Exchange_loadBalance(t *testing.T) {
 	cli := netip.AddrPortFrom(netutil.IPv4Localhost(), 1234)
 
 	for _, tc := range testCases {
-		p := createTestProxy(t, nil)
-		p.UpstreamConfig.Upstreams = nil
-		p.time = tc.clock
-		p.randSrc = randSrc
-		wantStat := tc.wantStat
-
+		ups := []upstream.Upstream{}
 		stats := map[string]int64{}
 		for _, s := range tc.servers {
-			p.UpstreamConfig.Upstreams = append(p.UpstreamConfig.Upstreams, measuredUpstream{
+			ups = append(ups, measuredUpstream{
 				Upstream: s,
 				stats:    stats,
 			})
 		}
+
+		p := mustNew(t, &Config{
+			UDPListenAddr: []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+			TCPListenAddr: []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+			UpstreamConfig: &UpstreamConfig{
+				Upstreams: ups,
+			},
+			TrustedProxies: netutil.SliceSubnetSet{
+				netip.MustParsePrefix("0.0.0.0/0"),
+				netip.MustParsePrefix("::0/0"),
+			},
+			RatelimitSubnetLenIPv4: 24,
+			RatelimitSubnetLenIPv6: 64,
+		})
+		p.time = tc.clock
+		p.randSrc = randSrc
+
+		wantStat := tc.wantStat
 
 		t.Run(tc.name, func(t *testing.T) {
 			for i := 0; i < requestsNum; i++ {

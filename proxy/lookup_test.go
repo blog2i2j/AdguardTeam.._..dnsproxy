@@ -17,15 +17,13 @@ func TestLookupNetIP(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	p := Proxy{
-		Config: Config{
-			UpstreamConfig: &UpstreamConfig{
-				Upstreams: []upstream.Upstream{dnsUpstream},
-			},
+	conf := &Config{
+		UpstreamConfig: &UpstreamConfig{
+			Upstreams: []upstream.Upstream{dnsUpstream},
 		},
 	}
 
-	err = p.Init()
+	p, err := New(conf)
 	require.NoError(t, err)
 
 	// Now let's try doing some lookups.

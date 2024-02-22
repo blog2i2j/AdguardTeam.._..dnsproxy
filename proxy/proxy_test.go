@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/rsa"
@@ -23,7 +24,6 @@ import (
 	"github.com/AdguardTeam/golibs/log"
 	"github.com/AdguardTeam/golibs/netutil"
 	"github.com/AdguardTeam/golibs/testutil"
-	"github.com/ameshkov/dnscrypt/v2"
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -43,20 +43,38 @@ const (
 	testMessagesCount = 10
 )
 
+// TODO(e.burkov):  !! doc
+var localhostAnyPort = netip.MustParseAddrPort(netutil.JoinHostPort(listenIP, 0))
+
 // TestProxyRace sends multiple parallel DNS requests to the
 // fully configured dnsproxy to check for race conditions
 func TestProxyRace(t *testing.T) {
 	// Prepare the proxy server
-	dnsProxy := createTestProxy(t, nil)
+	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
+		Timeout: defaultTimeout,
+	})
+	require.NoError(t, err)
 
 	// Use the same upstream twice so that we could rotate them
-	dnsProxy.UpstreamConfig.Upstreams = append(dnsProxy.UpstreamConfig.Upstreams, dnsProxy.UpstreamConfig.Upstreams[0])
+	upsConf.Upstreams = append(upsConf.Upstreams, upsConf.Upstreams[0])
+
+	dnsProxy := mustNew(t, &Config{
+		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: upsConf,
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+	})
 
 	// Start listening
-	err := dnsProxy.Start()
-	if err != nil {
-		t.Fatalf("cannot start the DNS proxy: %s", err)
-	}
+	ctx := context.Background()
+	err = dnsProxy.Start(ctx)
+	require.NoError(t, err)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
 	// Create a DNS-over-UDP client connection
 	addr := dnsProxy.Addr(ProtoUDP)
@@ -66,12 +84,6 @@ func TestProxyRace(t *testing.T) {
 	}
 
 	sendTestMessagesAsync(t, conn)
-
-	// Stop the proxy
-	err = dnsProxy.Stop()
-	if err != nil {
-		t.Fatalf("cannot stop the DNS proxy: %s", err)
-	}
 }
 
 // defaultTestTTL used to guarantee caching.
@@ -201,16 +213,26 @@ func TestProxy_Resolve_dnssecCache(t *testing.T) {
 		Signature:   "c29tZSBycnNpZyByZWxhdGVkIHN0dWZm",
 	}
 
-	p := createTestProxy(t, nil)
-	p.UpstreamConfig = &UpstreamConfig{
-		Upstreams: []upstream.Upstream{&testDNSSECUpstream{
-			a:     a,
-			txt:   txt,
-			ds:    ds,
-			rrsig: rrsig,
-		}},
-	}
-	p.cache = newCache(defaultCacheSize, false, false)
+	p := mustNew(t, &Config{
+		UDPListenAddr: []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr: []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: &UpstreamConfig{
+			Upstreams: []upstream.Upstream{&testDNSSECUpstream{
+				a:     a,
+				txt:   txt,
+				ds:    ds,
+				rrsig: rrsig,
+			}},
+		},
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+		CacheEnabled:           true,
+		CacheSizeBytes:         defaultCacheSize,
+	})
 
 	testCases := []struct {
 		wantAns dns.RR
@@ -310,8 +332,6 @@ func TestProxy_Resolve_dnssecCache(t *testing.T) {
 }
 
 func TestExchangeWithReservedDomains(t *testing.T) {
-	dnsProxy := createTestProxy(t, nil)
-
 	googleRslv, err := upstream.NewUpstreamResolver("8.8.8.8", &upstream.Options{
 		Timeout: 1 * time.Second,
 	})
@@ -325,21 +345,30 @@ func TestExchangeWithReservedDomains(t *testing.T) {
 		"[/maps.google.ru/]#",
 		"1.1.1.1",
 	}
-	config, err := ParseUpstreamsConfig(
+	upsConf, err := ParseUpstreamsConfig(
 		upstreams,
 		&upstream.Options{
-			InsecureSkipVerify: false,
-			Bootstrap:          upstream.NewCachingResolver(googleRslv),
-			Timeout:            1 * time.Second,
+			Bootstrap: upstream.NewCachingResolver(googleRslv),
+			Timeout:   1 * time.Second,
 		},
 	)
 	require.NoError(t, err)
+	dnsProxy := mustNew(t, &Config{
+		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: upsConf,
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+	})
 
-	dnsProxy.UpstreamConfig = config
-
-	err = dnsProxy.Start()
+	ctx := context.Background()
+	err = dnsProxy.Start(ctx)
 	require.NoError(t, err)
-	testutil.CleanupAndRequireSuccess(t, dnsProxy.Stop)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
 	// Create a DNS-over-TCP client connection.
 	addr := dnsProxy.Addr(ProtoTCP)
@@ -372,7 +401,7 @@ func TestExchangeWithReservedDomains(t *testing.T) {
 
 	// Test message should not be resolved.
 	res, _ = conn.ReadMsg()
-	require.Nil(t, res.Answer)
+	require.Empty(t, res.Answer)
 
 	// Create maps.google.ru test message.
 	req = createHostTestMessage("maps.google.ru")
@@ -387,43 +416,53 @@ func TestExchangeWithReservedDomains(t *testing.T) {
 // TestOneByOneUpstreamsExchange tries to resolve DNS request
 // with one valid and two invalid upstreams
 func TestOneByOneUpstreamsExchange(t *testing.T) {
-	timeOut := 1 * time.Second
-	dnsProxy := createTestProxy(t, nil)
-
-	// invalid fallback to make sure that reply is not coming from fallback
-	// server
-	var err error
-	dnsProxy.Fallbacks, err = ParseUpstreamsConfig(
-		[]string{"1.2.3.4:567"},
-		&upstream.Options{Timeout: timeOut},
-	)
-	require.NoError(t, err)
+	const testTimeout = 1 * time.Second
 
 	googleRslv, err := upstream.NewUpstreamResolver("8.8.8.8:53", &upstream.Options{
-		Timeout: timeOut,
+		Timeout: testTimeout,
 	})
 	require.NoError(t, err)
 
 	// add one valid and two invalid upstreams
-	upstreams := []string{"https://fake-dns.com/fake-dns-query", "tls://fake-dns.com", "1.1.1.1"}
-	dnsProxy.UpstreamConfig.Upstreams = []upstream.Upstream{}
-	for _, line := range upstreams {
-		var u upstream.Upstream
-		u, err = upstream.AddressToUpstream(
-			line,
-			&upstream.Options{
-				Bootstrap: upstream.NewCachingResolver(googleRslv),
-				Timeout:   timeOut,
-			},
-		)
-		require.NoError(t, err)
-
-		dnsProxy.UpstreamConfig.Upstreams = append(dnsProxy.UpstreamConfig.Upstreams, u)
+	upstreams := []string{
+		"https://fake-dns.com/fake-dns-query",
+		"tls://fake-dns.com",
+		"1.1.1.1",
 	}
-
-	err = dnsProxy.Start()
+	upsConf, err := ParseUpstreamsConfig(
+		upstreams,
+		&upstream.Options{
+			InsecureSkipVerify: false,
+			Bootstrap:          upstream.NewCachingResolver(googleRslv),
+			Timeout:            1 * time.Second,
+		},
+	)
 	require.NoError(t, err)
-	testutil.CleanupAndRequireSuccess(t, dnsProxy.Stop)
+
+	fallbacks, err := ParseUpstreamsConfig(
+		[]string{"1.2.3.4:567"},
+		&upstream.Options{Timeout: 1 * time.Second},
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, err)
+	dnsProxy := mustNew(t, &Config{
+		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: upsConf,
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		Fallbacks:              fallbacks,
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+	})
+
+	ctx := context.Background()
+	err = dnsProxy.Start(ctx)
+	require.NoError(t, err)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
 	// create a DNS-over-TCP client connection
 	addr := dnsProxy.Addr(ProtoTCP)
@@ -441,9 +480,7 @@ func TestOneByOneUpstreamsExchange(t *testing.T) {
 	requireResponse(t, req, res)
 
 	elapsed := time.Since(start)
-	if elapsed > 3*timeOut {
-		t.Fatalf("the operation took much more time than the configured timeout")
-	}
+	assert.Greater(t, 3*testTimeout, elapsed)
 }
 
 // newLocalUpstreamListener creates a new localhost listener on the specified
@@ -499,10 +536,7 @@ func TestFallback(t *testing.T) {
 		Host:   newLocalUpstreamListener(t, 0, failHandler).String(),
 	}).String()
 
-	dnsProxy := createTestProxy(t, nil)
-
-	var err error
-	dnsProxy.UpstreamConfig, err = ParseUpstreamsConfig(
+	upsConf, err := ParseUpstreamsConfig(
 		[]string{
 			failAddr,
 			"[/specific.example/]" + alsoSuccessAddr,
@@ -513,7 +547,7 @@ func TestFallback(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	dnsProxy.Fallbacks, err = ParseUpstreamsConfig(
+	fallbacks, err := ParseUpstreamsConfig(
 		[]string{
 			failAddr,
 			successAddr,
@@ -524,9 +558,23 @@ func TestFallback(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	err = dnsProxy.Start()
+	dnsProxy := mustNew(t, &Config{
+		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: upsConf,
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		Fallbacks:              fallbacks,
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+	})
+
+	ctx := context.Background()
+	err = dnsProxy.Start(ctx)
 	require.NoError(t, err)
-	testutil.CleanupAndRequireSuccess(t, dnsProxy.Stop)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
 	conn, err := dns.Dial("tcp", dnsProxy.Addr(ProtoTCP).String())
 	require.NoError(t, err)
@@ -582,37 +630,49 @@ func TestFallback(t *testing.T) {
 
 func TestFallbackFromInvalidBootstrap(t *testing.T) {
 	timeout := 1 * time.Second
-	// Prepare the proxy server
-	dnsProxy := createTestProxy(t, nil)
-
-	// List of fallback server addresses. Both are valid
-	var err error
-	dnsProxy.Fallbacks, err = ParseUpstreamsConfig(
-		[]string{"1.0.0.1", "8.8.8.8"},
-		&upstream.Options{Timeout: timeout},
-	)
-	require.NoError(t, err)
 
 	invalidRslv, err := upstream.NewUpstreamResolver("8.8.8.8:555", &upstream.Options{
 		Timeout: 1 * time.Second,
 	})
 	require.NoError(t, err)
 
-	// Using a DoT server with invalid bootstrap.
-	u, _ := upstream.AddressToUpstream(
-		"tls://dns.adguard.com",
+	// Prepare the proxy server
+	upsConf, err := ParseUpstreamsConfig(
+		[]string{
+			"tls://dns.adguard.com",
+		},
 		&upstream.Options{
 			Bootstrap: invalidRslv,
 			Timeout:   timeout,
 		},
 	)
-	dnsProxy.UpstreamConfig.Upstreams = []upstream.Upstream{}
-	dnsProxy.UpstreamConfig.Upstreams = append(dnsProxy.UpstreamConfig.Upstreams, u)
+	require.NoError(t, err)
+
+	// List of fallback server addresses. Both are valid
+	fallbacks, err := ParseUpstreamsConfig(
+		[]string{"1.0.0.1", "8.8.8.8"},
+		&upstream.Options{Timeout: timeout},
+	)
+	require.NoError(t, err)
+
+	dnsProxy := mustNew(t, &Config{
+		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: upsConf,
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		Fallbacks:              fallbacks,
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+	})
 
 	// Start listening
-	err = dnsProxy.Start()
+	ctx := context.Background()
+	err = dnsProxy.Start(ctx)
 	require.NoError(t, err)
-	testutil.CleanupAndRequireSuccess(t, dnsProxy.Stop)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
 	// Create a DNS-over-UDP client connection
 	addr := dnsProxy.Addr(ProtoUDP)
@@ -637,14 +697,29 @@ func TestFallbackFromInvalidBootstrap(t *testing.T) {
 
 func TestRefuseAny(t *testing.T) {
 	// Prepare the proxy server
-	dnsProxy := createTestProxy(t, nil)
-	dnsProxy.RefuseAny = true
+	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
+		Timeout: defaultTimeout,
+	})
+	require.NoError(t, err)
+
+	dnsProxy := mustNew(t, &Config{
+		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: upsConf,
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+		RefuseAny:              true,
+	})
 
 	// Start listening
-	err := dnsProxy.Start()
-	if err != nil {
-		t.Fatalf("cannot start the DNS proxy: %s", err)
-	}
+	ctx := context.Background()
+	err = dnsProxy.Start(ctx)
+	require.NoError(t, err)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
 	// Create a DNS-over-UDP client connection
 	addr := dnsProxy.Addr(ProtoUDP)
@@ -664,24 +739,33 @@ func TestRefuseAny(t *testing.T) {
 	if r.Rcode != dns.RcodeNotImplemented {
 		t.Fatalf("wrong response code (must've been NotImpl)")
 	}
-
-	// Stop the proxy
-	err = dnsProxy.Stop()
-	if err != nil {
-		t.Fatalf("cannot stop the DNS proxy: %s", err)
-	}
 }
 
 func TestInvalidDNSRequest(t *testing.T) {
 	// Prepare the proxy server
-	dnsProxy := createTestProxy(t, nil)
-	dnsProxy.RefuseAny = true
+	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
+		Timeout: defaultTimeout,
+	})
+	require.NoError(t, err)
+
+	dnsProxy := mustNew(t, &Config{
+		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: upsConf,
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+		RefuseAny:              true,
+	})
 
 	// Start listening
-	err := dnsProxy.Start()
-	if err != nil {
-		t.Fatalf("cannot start the DNS proxy: %s", err)
-	}
+	ctx := context.Background()
+	err = dnsProxy.Start(ctx)
+	require.NoError(t, err)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
 	// Create a DNS-over-UDP client connection
 	addr := dnsProxy.Addr(ProtoUDP)
@@ -700,19 +784,32 @@ func TestInvalidDNSRequest(t *testing.T) {
 	if r.Rcode != dns.RcodeServerFailure {
 		t.Fatalf("wrong response code (must've been ServerFailure)")
 	}
-
-	// Stop the proxy
-	err = dnsProxy.Stop()
-	if err != nil {
-		t.Fatalf("cannot stop the DNS proxy: %s", err)
-	}
 }
 
 // Server must drop incoming Response messages
 func TestResponseInRequest(t *testing.T) {
-	dnsProxy := createTestProxy(t, nil)
-	err := dnsProxy.Start()
-	assert.Nil(t, err)
+	// Prepare the proxy server
+	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
+		Timeout: defaultTimeout,
+	})
+	require.NoError(t, err)
+
+	dnsProxy := mustNew(t, &Config{
+		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: upsConf,
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+	})
+
+	ctx := context.Background()
+	err = dnsProxy.Start(ctx)
+	require.NoError(t, err)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
 	addr := dnsProxy.Addr(ProtoUDP)
 	client := &dns.Client{Net: "udp", Timeout: 500 * time.Millisecond}
@@ -723,15 +820,32 @@ func TestResponseInRequest(t *testing.T) {
 	r, _, err := client.Exchange(req, addr.String())
 	assert.NotNil(t, err)
 	assert.Nil(t, r)
-
-	_ = dnsProxy.Stop()
 }
 
 // Server must respond with SERVFAIL to requests without a Question
 func TestNoQuestion(t *testing.T) {
-	dnsProxy := createTestProxy(t, nil)
-	require.NoError(t, dnsProxy.Start())
-	testutil.CleanupAndRequireSuccess(t, dnsProxy.Stop)
+	// Prepare the proxy server
+	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
+		Timeout: defaultTimeout,
+	})
+	require.NoError(t, err)
+
+	dnsProxy := mustNew(t, &Config{
+		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: upsConf,
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+	})
+
+	ctx := context.Background()
+	err = dnsProxy.Start(ctx)
+	require.NoError(t, err)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
 	addr := dnsProxy.Addr(ProtoUDP)
 	client := &dns.Client{Net: "udp", Timeout: 500 * time.Millisecond}
@@ -747,6 +861,8 @@ func TestNoQuestion(t *testing.T) {
 
 // fakeUpstream is a mock upstream implementation to simplify testing.  It
 // allows assigning custom Exchange and Address methods.
+//
+// TODO(e.burkov):  Use dnsproxytest.FakeUpstream instead.
 type fakeUpstream struct {
 	onExchange func(m *dns.Msg) (resp *dns.Msg, err error)
 	onAddress  func() (addr string)
@@ -766,9 +882,27 @@ func (u *fakeUpstream) Address() (addr string) { return u.onAddress() }
 func (u *fakeUpstream) Close() (err error) { return u.onClose() }
 
 func TestProxy_ReplyFromUpstream_badResponse(t *testing.T) {
-	dnsProxy := createTestProxy(t, nil)
-	require.NoError(t, dnsProxy.Start())
-	testutil.CleanupAndRequireSuccess(t, dnsProxy.Stop)
+	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
+		Timeout: defaultTimeout,
+	})
+	require.NoError(t, err)
+
+	dnsProxy := mustNew(t, &Config{
+		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: upsConf,
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+	})
+
+	ctx := context.Background()
+	err = dnsProxy.Start(ctx)
+	require.NoError(t, err)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
 	exchangeFunc := func(m *dns.Msg) (resp *dns.Msg, err error) {
 		resp = &dns.Msg{}
@@ -804,7 +938,6 @@ func TestProxy_ReplyFromUpstream_badResponse(t *testing.T) {
 		Addr: netip.MustParseAddrPort("1.2.3.0:1234"),
 	}
 
-	var err error
 	require.NotPanics(t, func() {
 		err = dnsProxy.Resolve(d)
 	})
@@ -814,10 +947,27 @@ func TestProxy_ReplyFromUpstream_badResponse(t *testing.T) {
 }
 
 func TestExchangeCustomUpstreamConfig(t *testing.T) {
-	prx := createTestProxy(t, nil)
-	err := prx.Start()
+	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
+		Timeout: defaultTimeout,
+	})
 	require.NoError(t, err)
-	testutil.CleanupAndRequireSuccess(t, prx.Stop)
+
+	prx := mustNew(t, &Config{
+		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: upsConf,
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+	})
+
+	ctx := context.Background()
+	err = prx.Start(ctx)
+	require.NoError(t, err)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return prx.Shutdown(ctx) })
 
 	ansIP := net.IP{4, 3, 2, 1}
 	u := &testUpstream{
@@ -849,13 +999,29 @@ func TestExchangeCustomUpstreamConfig(t *testing.T) {
 }
 
 func TestExchangeCustomUpstreamConfigCache(t *testing.T) {
-	prx := createTestProxy(t, nil)
-	prx.CacheEnabled = true
-	prx.initCache()
-
-	err := prx.Start()
+	// Prepare the proxy server
+	upsConf, err := ParseUpstreamsConfig([]string{upstreamAddr}, &upstream.Options{
+		Timeout: defaultTimeout,
+	})
 	require.NoError(t, err)
-	testutil.CleanupAndRequireSuccess(t, prx.Stop)
+
+	prx := mustNew(t, &Config{
+		UDPListenAddr:  []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:  []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: upsConf,
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+		CacheEnabled:           true,
+	})
+
+	ctx := context.Background()
+	err = prx.Start(ctx)
+	require.NoError(t, err)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return prx.Shutdown(ctx) })
 
 	var count int
 
@@ -957,10 +1123,6 @@ func TestECS(t *testing.T) {
 
 // Resolve the same host with the different client subnet values
 func TestECSProxy(t *testing.T) {
-	prx := createTestProxy(t, nil)
-	prx.EnableEDNSClientSubnet = true
-	prx.CacheEnabled = true
-
 	var (
 		ip1230 = net.IP{1, 2, 3, 0}
 		ip2230 = net.IP{2, 2, 3, 0}
@@ -969,17 +1131,34 @@ func TestECSProxy(t *testing.T) {
 		ip4323 = net.IP{4, 3, 2, 3}
 	)
 
-	u := testUpstream{
+	u := &testUpstream{
 		ans: []dns.RR{&dns.A{
 			Hdr: dns.RR_Header{Rrtype: dns.TypeA, Name: "host.", Ttl: 60},
 			A:   ip4321,
 		}},
 		ecsIP: ip1230,
 	}
-	prx.UpstreamConfig.Upstreams = []upstream.Upstream{&u}
-	err := prx.Start()
+
+	prx := mustNew(t, &Config{
+		UDPListenAddr: []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr: []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: &UpstreamConfig{
+			Upstreams: []upstream.Upstream{u},
+		},
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+		EnableEDNSClientSubnet: true,
+		CacheEnabled:           true,
+	})
+
+	ctx := context.Background()
+	err := prx.Start(ctx)
 	require.NoError(t, err)
-	testutil.CleanupAndRequireSuccess(t, prx.Stop)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return prx.Shutdown(ctx) })
 
 	t.Run("cache_subnet", func(t *testing.T) {
 		d := DNSContext{
@@ -1061,13 +1240,7 @@ func TestECSProxy(t *testing.T) {
 
 func TestECSProxyCacheMinMaxTTL(t *testing.T) {
 	clientIP := net.IP{1, 2, 3, 0}
-
-	prx := createTestProxy(t, nil)
-	prx.EnableEDNSClientSubnet = true
-	prx.CacheEnabled = true
-	prx.CacheMinTTL = 20
-	prx.CacheMaxTTL = 40
-	u := testUpstream{
+	u := &testUpstream{
 		ans: []dns.RR{&dns.A{
 			Hdr: dns.RR_Header{
 				Rrtype: dns.TypeA,
@@ -1078,10 +1251,29 @@ func TestECSProxyCacheMinMaxTTL(t *testing.T) {
 		}},
 		ecsIP: clientIP,
 	}
-	prx.UpstreamConfig.Upstreams = []upstream.Upstream{&u}
-	err := prx.Start()
+
+	prx := mustNew(t, &Config{
+		UDPListenAddr: []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr: []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig: &UpstreamConfig{
+			Upstreams: []upstream.Upstream{u},
+		},
+		TrustedProxies: netutil.SliceSubnetSet{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::0/0"),
+		},
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+		EnableEDNSClientSubnet: true,
+		CacheEnabled:           true,
+		CacheMinTTL:            20,
+		CacheMaxTTL:            40,
+	})
+
+	ctx := context.Background()
+	err := prx.Start(ctx)
 	require.NoError(t, err)
-	testutil.CleanupAndRequireSuccess(t, prx.Stop)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return prx.Shutdown(ctx) })
 
 	// first request
 	d := DNSContext{
@@ -1127,74 +1319,24 @@ func TestECSProxyCacheMinMaxTTL(t *testing.T) {
 	assert.True(t, ci.m.Answer[0].Header().Ttl == prx.CacheMaxTTL)
 }
 
-func createTestDNSCryptProxy(t *testing.T) (*Proxy, dnscrypt.ResolverConfig) {
-	p := createTestProxy(t, nil)
-	p.UDPListenAddr = nil
-	p.TCPListenAddr = nil
-	port := getFreePort()
-	p.DNSCryptUDPListenAddr = []*net.UDPAddr{
-		{Port: int(port), IP: net.ParseIP(listenIP)},
-	}
-	p.DNSCryptTCPListenAddr = []*net.TCPAddr{
-		{Port: int(port), IP: net.ParseIP(listenIP)},
-	}
-
-	rc, err := dnscrypt.GenerateResolverConfig("example.org", nil)
-	assert.Nil(t, err)
-
-	cert, err := rc.CreateCert()
-	assert.Nil(t, err)
-
-	p.DNSCryptProviderName = rc.ProviderName
-	p.DNSCryptResolverCert = cert
-	return p, rc
-}
-
-func getFreePort() uint {
-	l, _ := net.Listen("tcp", "127.0.0.1:0")
-	port := uint(l.Addr().(*net.TCPAddr).Port)
-
-	// stop listening immediately
-	_ = l.Close()
-
-	// sleep for 100ms (may be necessary on Windows)
-	time.Sleep(100 * time.Millisecond)
-	return port
-}
-
-func createTestProxy(t *testing.T, tlsConfig *tls.Config) (p *Proxy) {
-	t.Helper()
-
-	p = &Proxy{
-		time: realClock{},
-	}
-
-	if ip := net.ParseIP(listenIP); tlsConfig != nil {
-		p.TLSListenAddr = []*net.TCPAddr{{IP: ip, Port: 0}}
-		p.HTTPSListenAddr = []*net.TCPAddr{{IP: ip, Port: 0}}
-		p.QUICListenAddr = []*net.UDPAddr{{IP: ip, Port: 0}}
-		p.TLSConfig = tlsConfig
-	} else {
-		p.UDPListenAddr = []*net.UDPAddr{{IP: ip, Port: 0}}
-		p.TCPListenAddr = []*net.TCPAddr{{IP: ip, Port: 0}}
-	}
-	upstreams := make([]upstream.Upstream, 0)
-	dnsUpstream, err := upstream.AddressToUpstream(
-		upstreamAddr,
-		&upstream.Options{Timeout: defaultTimeout},
-	)
-	require.NoError(t, err)
-
-	p.UpstreamConfig = &UpstreamConfig{}
-	p.UpstreamConfig.Upstreams = append(upstreams, dnsUpstream)
-
-	p.TrustedProxies = netutil.SliceSubnetSet{
+// TODO(e.burkov):  !! remove
+var testConfig = &Config{
+	UDPListenAddr: []*net.UDPAddr{{IP: net.ParseIP(listenIP), Port: 0}},
+	TCPListenAddr: []*net.TCPAddr{{IP: net.ParseIP(listenIP), Port: 0}},
+	TrustedProxies: netutil.SliceSubnetSet{
 		netip.MustParsePrefix("0.0.0.0/0"),
 		netip.MustParsePrefix("::0/0"),
-	}
+	},
+	RatelimitSubnetLenIPv4: 24,
+	RatelimitSubnetLenIPv6: 64,
+}
 
-	p.RatelimitSubnetLenIPv4 = 24
-	p.RatelimitSubnetLenIPv6 = 64
+// mustNew wraps [New] function failing the test on error.
+func mustNew(t *testing.T, conf *Config) (p *Proxy) {
+	t.Helper()
+
+	p, err := New(conf)
+	require.NoError(t, err)
 
 	return p
 }
