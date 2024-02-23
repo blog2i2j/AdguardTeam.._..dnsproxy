@@ -279,12 +279,26 @@ func mustStartDefaultProxy(t *testing.T) (p *Proxy) {
 // TestProxyRace sends multiple parallel DNS requests to the
 // fully configured dnsproxy to check for race conditions
 func TestProxyRace(t *testing.T) {
-	dnsProxy := mustStartDefaultProxy(t)
-	// Use the same upstream twice so that we could rotate them
-	dnsProxy.UpstreamConfig.Upstreams = append(
-		dnsProxy.UpstreamConfig.Upstreams,
-		dnsProxy.UpstreamConfig.Upstreams[0],
+	upsConf := newTestUpstreamConfig(
+		t,
+		defaultTimeout,
+		// Use the same upstream twice so that we could rotate them
+		testDefaultUpstreamAddr,
+		testDefaultUpstreamAddr,
 	)
+	dnsProxy := mustNew(t, &Config{
+		UDPListenAddr:          []*net.UDPAddr{net.UDPAddrFromAddrPort(localhostAnyPort)},
+		TCPListenAddr:          []*net.TCPAddr{net.TCPAddrFromAddrPort(localhostAnyPort)},
+		UpstreamConfig:         upsConf,
+		TrustedProxies:         defaultTrustedProxies,
+		RatelimitSubnetLenIPv4: 24,
+		RatelimitSubnetLenIPv6: 64,
+	})
+
+	ctx := context.Background()
+	err := dnsProxy.Start(ctx)
+	require.NoError(t, err)
+	testutil.CleanupAndRequireSuccess(t, func() (err error) { return dnsProxy.Shutdown(ctx) })
 
 	// Create a DNS-over-UDP client connection
 	addr := dnsProxy.Addr(ProtoUDP)
