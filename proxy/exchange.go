@@ -120,19 +120,18 @@ func (stats upstreamRTTStats) update(rtt time.Duration) (updated upstreamRTTStat
 // calcWeights returns the slice of weights, each corresponding to the upstream
 // with the same index in the given slice.
 func (p *Proxy) calcWeights(ups []upstream.Upstream) (weights []float64) {
-	weights = make([]float64, len(ups))
+	weights = make([]float64, 0, len(ups))
 
 	p.rttLock.Lock()
 	defer p.rttLock.Unlock()
 
-	for i, u := range ups {
+	for _, u := range ups {
 		stat := p.upstreamRTTStats[u.Address()]
-		switch 0.0 {
-		case stat.rttSum, stat.reqNum:
+		if stat.rttSum == 0 || stat.reqNum == 0 {
 			// Use 1 as the default weight.
-			weights[i] = 1
-		default:
-			weights[i] = 1 / (stat.rttSum / stat.reqNum)
+			weights = append(weights, 1)
+		} else {
+			weights = append(weights, 1/(stat.rttSum/stat.reqNum))
 		}
 	}
 
